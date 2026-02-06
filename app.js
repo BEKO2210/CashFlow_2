@@ -1,7 +1,7 @@
 (function(){
 'use strict';
 
-var DB_KEY = 'cashflow_data';
+var DB_KEY = 'cashflow_v2';
 var MONTHS_DE = ['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'];
 
 var state = {
@@ -35,12 +35,15 @@ function save() {
       varBudgets: state.varBudgets
     };
     localStorage.setItem(DB_KEY, JSON.stringify(state));
-  } catch (e) { /* quota exceeded fallback */ }
+  } catch (e) {}
 }
 
 function load() {
   try {
     var raw = localStorage.getItem(DB_KEY);
+    if (!raw) {
+      raw = localStorage.getItem('cashflow_data');
+    }
     if (raw) {
       var parsed = JSON.parse(raw);
       state.income = parsed.income || 0;
@@ -50,7 +53,6 @@ function load() {
       state.currentMonth = parsed.currentMonth || getMonthKey();
       state.onboarded = parsed.onboarded || false;
       state.months = parsed.months || {};
-
       if (state.months[state.currentMonth]) {
         var m = state.months[state.currentMonth];
         state.income = m.income;
@@ -64,11 +66,14 @@ function load() {
   }
 }
 
+/* ====================== UTILS ====================== */
+
 function $(id) { return document.getElementById(id); }
+
 function formatCurrency(n) {
   var abs = Math.abs(n);
   var formatted = abs.toLocaleString('de-DE', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-  return (n < 0 ? '-' : '') + formatted + ' €';
+  return (n < 0 ? '\u2212' : '') + formatted + '\u2009€';
 }
 
 function parseAmount(str) {
@@ -80,14 +85,53 @@ function parseAmount(str) {
 
 function sumArray(arr) {
   var total = 0;
-  for (var i = 0; i < arr.length; i++) {
-    total += arr[i].amount;
-  }
+  for (var i = 0; i < arr.length; i++) total += arr[i].amount;
   return total;
 }
 
 function genId() {
-  return Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+  return Date.now().toString(36) + Math.random().toString(36).substr(2, 6);
+}
+
+function haptic() {
+  if (navigator.vibrate) navigator.vibrate(8);
+}
+
+/* ====================== TOAST ====================== */
+
+var toastTimer = null;
+function showToast(msg) {
+  var el = $('toast');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  requestAnimationFrame(function() {
+    el.classList.add('show');
+  });
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function() {
+    el.classList.remove('show');
+    setTimeout(function() { el.classList.add('hidden'); }, 350);
+  }, 2200);
+}
+
+/* ====================== ANIMATED COUNTER ====================== */
+
+function animateValue(el, start, end, duration) {
+  if (start === end) {
+    el.textContent = formatCurrency(end);
+    return;
+  }
+  var startTime = null;
+  var diff = end - start;
+  function step(ts) {
+    if (!startTime) startTime = ts;
+    var progress = Math.min((ts - startTime) / duration, 1);
+    var eased = 1 - Math.pow(1 - progress, 3);
+    var current = Math.round(start + diff * eased);
+    el.textContent = formatCurrency(current);
+    if (progress < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
 }
 
 /* ====================== SCREENS ====================== */
@@ -100,17 +144,18 @@ var screens = {
   settings: $('screen-settings')
 };
 
+var currentScreen = '';
+var prevValues = { fix: 0, variable: 0, free: 0, income: 0 };
+
 function showScreen(name) {
   for (var key in screens) {
-    if (screens[key]) {
-      screens[key].classList.add('hidden');
-    }
+    if (screens[key]) screens[key].classList.add('hidden');
   }
   if (screens[name]) {
     screens[name].classList.remove('hidden');
-    screens[name].scrollTop = 0;
-    window.scrollTo(0, 0);
+    window.scrollTo({ top: 0, behavior: 'instant' });
   }
+  currentScreen = name;
 }
 
 /* ====================== ONBOARDING ====================== */
@@ -130,10 +175,12 @@ inputIncomeExtra.addEventListener('input', validateOnboarding);
 btnStart.addEventListener('click', function() {
   var inc = parseAmount(inputIncome.value);
   if (inc <= 0) return;
+  haptic();
   state.income = inc;
   state.incomeExtra = parseAmount(inputIncomeExtra.value);
   state.onboarded = true;
   state.currentMonth = getMonthKey();
+  prevValues = { fix: 0, variable: 0, free: 0, income: 0 };
   save();
   showScreen('dashboard');
   renderDashboard();
@@ -154,10 +201,9 @@ function renderDashboard() {
   var varPct = total > 0 ? (variable / total) * 100 : 0;
   var freePct = total > 0 ? (free / total) * 100 : 0;
 
-  $('dash-income').textContent = formatCurrency(total);
+  animateValue($('dash-income'), prevValues.income, total, 500);
   $('month-selector').textContent = getMonthLabel(state.currentMonth);
 
-  /* Money Bar */
   var barFix = $('bar-fix');
   var barVar = $('bar-var');
   var barFree = $('bar-free');
@@ -177,12 +223,13 @@ function renderDashboard() {
     barFree.style.width = Math.max(freePct, 0) + '%';
   }
 
-  /* Metrics */
-  $('metric-fix').textContent = formatCurrency(fix);
+  animateValue($('metric-fix'), prevValues.fix, fix, 400);
   $('metric-fix-pct').textContent = fixPct.toFixed(0) + '% des Einkommens';
-  $('metric-var').textContent = formatCurrency(variable);
+
+  animateValue($('metric-var'), prevValues.variable, variable, 400);
   $('metric-var-pct').textContent = varPct.toFixed(0) + '% des Einkommens';
-  $('metric-free').textContent = formatCurrency(free);
+
+  animateValue($('metric-free'), prevValues.free, free, 400);
 
   var freeCard = document.querySelector('.metric-card--free');
   if (free < 0) {
@@ -190,10 +237,10 @@ function renderDashboard() {
     $('metric-free-pct').textContent = 'Defizit!';
   } else {
     freeCard.classList.remove('negative');
-    $('metric-free-pct').textContent = freePct.toFixed(0) + '% frei verfügbar';
+    $('metric-free-pct').textContent = freePct.toFixed(0) + '% frei verf\u00fcgbar';
   }
 
-  /* Insight */
+  prevValues = { fix: fix, variable: variable, free: free, income: total };
   renderInsight(fixPct, freePct, free);
 }
 
@@ -208,35 +255,31 @@ function renderInsight(fixPct, freePct, free) {
     card.classList.add('insight-card--critical');
     card.classList.remove('hidden');
     icon.textContent = '\u{1F6A8}';
-    text.textContent = 'Du planst über dein Einkommen. Reduziere Kosten oder erhöhe dein Einkommen.';
+    text.textContent = 'Du planst \u00fcber dein Einkommen. Reduziere Kosten oder erh\u00f6he dein Einkommen.';
     return;
   }
-
   if (fixPct > 50) {
     card.classList.add('insight-card--warning');
     card.classList.remove('hidden');
     icon.textContent = '\u{26A0}\u{FE0F}';
-    text.textContent = 'Deine Fixkosten liegen bei über 50%. Das schränkt deine Flexibilität ein.';
+    text.textContent = 'Deine Fixkosten liegen bei \u00fcber 50\u2009%. Das schr\u00e4nkt deine Flexibilit\u00e4t ein.';
     return;
   }
-
   var usedPct = 100 - freePct;
   if (usedPct > 85) {
     card.classList.add('insight-card--danger');
     card.classList.remove('hidden');
     icon.textContent = '\u{26A0}\u{FE0F}';
-    text.textContent = 'Dein Monat ist fast ausgeschöpft. Nur wenig Puffer übrig.';
+    text.textContent = 'Dein Monat ist fast ausgesch\u00f6pft. Nur wenig Puffer \u00fcbrig.';
     return;
   }
-
   if (freePct > 30) {
     card.classList.add('insight-card--success');
     card.classList.remove('hidden');
     icon.textContent = '\u{1F525}';
-    text.textContent = 'Starke finanzielle Flexibilität. Über 30% deines Einkommens ist frei.';
+    text.textContent = 'Starke finanzielle Flexibilit\u00e4t. \u00dcber 30\u2009% deines Einkommens ist frei.';
     return;
   }
-
   card.classList.add('hidden');
 }
 
@@ -250,36 +293,80 @@ function renderFixList() {
   for (var i = 0; i < state.fixCosts.length; i++) {
     var item = state.fixCosts[i];
     total += item.amount;
-
-    var div = document.createElement('div');
-    div.className = 'cost-item';
-    div.setAttribute('data-id', item.id);
-    div.style.animationDelay = (i * 0.03) + 's';
-
-    var nameSpan = document.createElement('span');
-    nameSpan.className = 'cost-item-name';
-    nameSpan.textContent = item.name;
-
-    var amountSpan = document.createElement('span');
-    amountSpan.className = 'cost-item-amount';
-    amountSpan.textContent = formatCurrency(item.amount);
-
-    var delBtn = document.createElement('button');
-    delBtn.className = 'cost-item-delete';
-    delBtn.setAttribute('aria-label', 'Löschen');
-    delBtn.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="2" y1="2" x2="12" y2="12"/><line x1="12" y1="2" x2="2" y2="12"/></svg>';
-    delBtn.addEventListener('click', (function(id) {
-      return function() { deleteFixCost(id); };
-    })(item.id));
-
-    div.appendChild(nameSpan);
-    div.appendChild(amountSpan);
-    div.appendChild(delBtn);
-    list.appendChild(div);
+    list.appendChild(createCostItem(item, 'fix', i));
   }
 
   $('fix-total').textContent = formatCurrency(total);
   updateUsedChips('fix');
+}
+
+function createCostItem(item, type, index) {
+  var div = document.createElement('div');
+  div.className = 'cost-item';
+  div.setAttribute('data-id', item.id);
+  div.style.animationDelay = (index * 0.04) + 's';
+
+  var nameSpan = document.createElement('span');
+  nameSpan.className = 'cost-item-name';
+  nameSpan.textContent = item.name;
+
+  var amountSpan = document.createElement('span');
+  amountSpan.className = 'cost-item-amount';
+  amountSpan.textContent = formatCurrency(item.amount);
+
+  var delBtn = document.createElement('button');
+  delBtn.className = 'cost-item-delete';
+  delBtn.setAttribute('aria-label', item.name + ' l\u00f6schen');
+  delBtn.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="3" x2="11" y2="11"/><line x1="11" y1="3" x2="3" y2="11"/></svg>';
+  delBtn.addEventListener('click', function() {
+    haptic();
+    if (type === 'fix') deleteFixCost(item.id);
+    else deleteVarBudget(item.id);
+  });
+
+  div.appendChild(nameSpan);
+  div.appendChild(amountSpan);
+  div.appendChild(delBtn);
+
+  if (type === 'var') {
+    var maxBudget = getTotalIncome();
+    var sliderRow = document.createElement('div');
+    sliderRow.className = 'slider-row';
+
+    var slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '0';
+    slider.max = String(Math.max(maxBudget * 0.5, item.amount * 2, 500));
+    slider.step = '10';
+    slider.value = String(item.amount);
+    slider.setAttribute('aria-label', item.name + ' Budget anpassen');
+
+    var sliderVal = document.createElement('span');
+    sliderVal.className = 'slider-val';
+    sliderVal.textContent = formatCurrency(item.amount);
+
+    slider.addEventListener('input', (function(id, valEl, amEl) {
+      return function(e) {
+        var newAmount = parseFloat(e.target.value);
+        for (var j = 0; j < state.varBudgets.length; j++) {
+          if (state.varBudgets[j].id === id) {
+            state.varBudgets[j].amount = newAmount;
+            break;
+          }
+        }
+        valEl.textContent = formatCurrency(newAmount);
+        amEl.textContent = formatCurrency(newAmount);
+        $('var-total').textContent = formatCurrency(sumArray(state.varBudgets));
+        save();
+      };
+    })(item.id, sliderVal, amountSpan));
+
+    sliderRow.appendChild(slider);
+    sliderRow.appendChild(sliderVal);
+    div.appendChild(sliderRow);
+  }
+
+  return div;
 }
 
 function addFixCost(name, amount) {
@@ -287,10 +374,11 @@ function addFixCost(name, amount) {
   state.fixCosts.push({ id: genId(), name: name, amount: amount });
   save();
   renderFixList();
+  showToast(name + ' hinzugef\u00fcgt');
 }
 
 function deleteFixCost(id) {
-  var el = document.querySelector('.cost-item[data-id="' + id + '"]');
+  var el = document.querySelector('#screen-fixkosten .cost-item[data-id="' + id + '"]');
   if (el) {
     el.classList.add('removing');
     el.addEventListener('animationend', function() {
@@ -305,6 +393,7 @@ $('fix-add').addEventListener('click', function() {
   var name = $('fix-name').value.trim();
   var amount = parseAmount($('fix-amount').value);
   if (!name || amount <= 0) return;
+  haptic();
   addFixCost(name, amount);
   $('fix-name').value = '';
   $('fix-amount').value = '';
@@ -312,26 +401,17 @@ $('fix-add').addEventListener('click', function() {
 });
 
 $('fix-amount').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    $('fix-add').click();
-  }
+  if (e.key === 'Enter') { e.preventDefault(); $('fix-add').click(); }
 });
-
 $('fix-name').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    $('fix-amount').focus();
-  }
+  if (e.key === 'Enter') { e.preventDefault(); $('fix-amount').focus(); }
 });
 
-/* Fix Quick Chips */
-var fixChips = $('fix-chips');
-fixChips.addEventListener('click', function(e) {
+$('fix-chips').addEventListener('click', function(e) {
   var chip = e.target.closest('.chip');
   if (!chip || chip.classList.contains('used')) return;
-  var name = chip.getAttribute('data-name');
-  $('fix-name').value = name;
+  haptic();
+  $('fix-name').value = chip.getAttribute('data-name');
   $('fix-amount').value = '';
   $('fix-amount').focus();
 });
@@ -342,80 +422,11 @@ function renderVarList() {
   var list = $('var-list');
   list.innerHTML = '';
   var total = 0;
-  var maxBudget = getTotalIncome();
 
   for (var i = 0; i < state.varBudgets.length; i++) {
     var item = state.varBudgets[i];
     total += item.amount;
-
-    var div = document.createElement('div');
-    div.className = 'cost-item';
-    div.setAttribute('data-id', item.id);
-    div.style.animationDelay = (i * 0.03) + 's';
-
-    var nameSpan = document.createElement('span');
-    nameSpan.className = 'cost-item-name';
-    nameSpan.textContent = item.name;
-
-    var amountSpan = document.createElement('span');
-    amountSpan.className = 'cost-item-amount';
-    amountSpan.textContent = formatCurrency(item.amount);
-
-    var delBtn = document.createElement('button');
-    delBtn.className = 'cost-item-delete';
-    delBtn.setAttribute('aria-label', 'Löschen');
-    delBtn.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="2" y1="2" x2="12" y2="12"/><line x1="12" y1="2" x2="2" y2="12"/></svg>';
-    delBtn.addEventListener('click', (function(id) {
-      return function() { deleteVarBudget(id); };
-    })(item.id));
-
-    div.appendChild(nameSpan);
-    div.appendChild(amountSpan);
-    div.appendChild(delBtn);
-
-    /* Slider Row */
-    var sliderRow = document.createElement('div');
-    sliderRow.className = 'slider-row';
-
-    var slider = document.createElement('input');
-    slider.type = 'range';
-    slider.min = '0';
-    slider.max = String(Math.max(maxBudget * 0.5, item.amount * 2, 500));
-    slider.step = '10';
-    slider.value = String(item.amount);
-    slider.setAttribute('aria-label', item.name + ' Budget');
-
-    var sliderVal = document.createElement('span');
-    sliderVal.className = 'slider-val';
-    sliderVal.textContent = formatCurrency(item.amount);
-
-    slider.addEventListener('input', (function(id, valEl) {
-      return function(e) {
-        var newAmount = parseFloat(e.target.value);
-        for (var j = 0; j < state.varBudgets.length; j++) {
-          if (state.varBudgets[j].id === id) {
-            state.varBudgets[j].amount = newAmount;
-            break;
-          }
-        }
-        valEl.textContent = formatCurrency(newAmount);
-        var parentItem = e.target.closest('.cost-item');
-        if (parentItem) {
-          parentItem.querySelector('.cost-item-amount').textContent = formatCurrency(newAmount);
-        }
-        var t = sumArray(state.varBudgets);
-        $('var-total').textContent = formatCurrency(t);
-        save();
-      };
-    })(item.id, sliderVal));
-
-    sliderRow.appendChild(slider);
-    sliderRow.appendChild(sliderVal);
-
-    div.style.flexWrap = 'wrap';
-    sliderRow.style.width = '100%';
-    div.appendChild(sliderRow);
-    list.appendChild(div);
+    list.appendChild(createCostItem(item, 'var', i));
   }
 
   $('var-total').textContent = formatCurrency(total);
@@ -427,6 +438,7 @@ function addVarBudget(name, amount) {
   state.varBudgets.push({ id: genId(), name: name, amount: amount });
   save();
   renderVarList();
+  showToast(name + ' hinzugef\u00fcgt');
 }
 
 function deleteVarBudget(id) {
@@ -445,6 +457,7 @@ $('var-add').addEventListener('click', function() {
   var name = $('var-name').value.trim();
   var amount = parseAmount($('var-amount').value);
   if (!name || amount <= 0) return;
+  haptic();
   addVarBudget(name, amount);
   $('var-name').value = '';
   $('var-amount').value = '';
@@ -452,82 +465,69 @@ $('var-add').addEventListener('click', function() {
 });
 
 $('var-amount').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    $('var-add').click();
-  }
+  if (e.key === 'Enter') { e.preventDefault(); $('var-add').click(); }
 });
-
 $('var-name').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    $('var-amount').focus();
-  }
+  if (e.key === 'Enter') { e.preventDefault(); $('var-amount').focus(); }
 });
 
-/* Var Quick Chips */
-var varChips = $('var-chips');
-varChips.addEventListener('click', function(e) {
+$('var-chips').addEventListener('click', function(e) {
   var chip = e.target.closest('.chip');
   if (!chip || chip.classList.contains('used')) return;
-  var name = chip.getAttribute('data-name');
-  $('var-name').value = name;
+  haptic();
+  $('var-name').value = chip.getAttribute('data-name');
   $('var-amount').value = '';
   $('var-amount').focus();
 });
 
-/* ====================== USED CHIPS ====================== */
+/* ====================== CHIPS ====================== */
 
 function updateUsedChips(type) {
-  var chipsContainer, items;
-  if (type === 'fix') {
-    chipsContainer = $('fix-chips');
-    items = state.fixCosts;
-  } else {
-    chipsContainer = $('var-chips');
-    items = state.varBudgets;
-  }
+  var container = type === 'fix' ? $('fix-chips') : $('var-chips');
+  var items = type === 'fix' ? state.fixCosts : state.varBudgets;
   var usedNames = items.map(function(i) { return i.name.toLowerCase(); });
-  var chips = chipsContainer.querySelectorAll('.chip');
+  var chips = container.querySelectorAll('.chip');
   for (var i = 0; i < chips.length; i++) {
     var chipName = chips[i].getAttribute('data-name').toLowerCase();
-    if (usedNames.indexOf(chipName) >= 0) {
-      chips[i].classList.add('used');
-    } else {
-      chips[i].classList.remove('used');
-    }
+    chips[i].classList.toggle('used', usedNames.indexOf(chipName) >= 0);
   }
 }
 
 /* ====================== NAVIGATION ====================== */
 
 $('nav-fix').addEventListener('click', function() {
+  haptic();
   showScreen('fixkosten');
   renderFixList();
 });
 
 $('nav-var').addEventListener('click', function() {
+  haptic();
   showScreen('variable');
   renderVarList();
 });
 
 $('back-fix').addEventListener('click', function() {
+  haptic();
   showScreen('dashboard');
   renderDashboard();
 });
 
 $('back-var').addEventListener('click', function() {
+  haptic();
   showScreen('dashboard');
   renderDashboard();
 });
 
 $('btn-settings').addEventListener('click', function() {
+  haptic();
   $('settings-income').value = state.income || '';
   $('settings-income-extra').value = state.incomeExtra || '';
   showScreen('settings');
 });
 
 $('back-settings').addEventListener('click', function() {
+  haptic();
   showScreen('dashboard');
   renderDashboard();
 });
@@ -535,27 +535,34 @@ $('back-settings').addEventListener('click', function() {
 $('btn-save-settings').addEventListener('click', function() {
   var inc = parseAmount($('settings-income').value);
   if (inc <= 0) return;
+  haptic();
   state.income = inc;
   state.incomeExtra = parseAmount($('settings-income-extra').value);
   save();
   showScreen('dashboard');
   renderDashboard();
+  showToast('Einstellungen gespeichert');
 });
 
 $('btn-reset').addEventListener('click', function() {
-  if (confirm('Alle Daten unwiderruflich löschen?')) {
+  if (confirm('Alle Daten unwiderruflich l\u00f6schen?')) {
+    haptic();
     localStorage.removeItem(DB_KEY);
+    localStorage.removeItem('cashflow_data');
     state = { income: 0, incomeExtra: 0, fixCosts: [], varBudgets: [], currentMonth: getMonthKey(), onboarded: false, months: {} };
+    prevValues = { fix: 0, variable: 0, free: 0, income: 0 };
     showScreen('onboarding');
     inputIncome.value = '';
     inputIncomeExtra.value = '';
     btnStart.disabled = true;
+    showToast('Daten gel\u00f6scht');
   }
 });
 
 /* ====================== MONTH SWITCH ====================== */
 
 $('btn-new-month').addEventListener('click', function() {
+  haptic();
   $('modal-month').classList.remove('hidden');
 });
 
@@ -563,11 +570,12 @@ $('month-cancel').addEventListener('click', function() {
   $('modal-month').classList.add('hidden');
 });
 
-document.querySelector('.modal-backdrop').addEventListener('click', function() {
+$('modal-backdrop').addEventListener('click', function() {
   $('modal-month').classList.add('hidden');
 });
 
 $('month-carry').addEventListener('click', function() {
+  haptic();
   save();
   var now = new Date();
   var next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
@@ -575,30 +583,51 @@ $('month-carry').addEventListener('click', function() {
   save();
   $('modal-month').classList.add('hidden');
   renderDashboard();
+  showToast('Monat gewechselt \u2013 Werte \u00fcbernommen');
 });
 
 $('month-fresh').addEventListener('click', function() {
+  haptic();
   save();
   var now = new Date();
   var next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
   state.currentMonth = getMonthKey(next);
   state.fixCosts = [];
   state.varBudgets = [];
+  prevValues = { fix: 0, variable: 0, free: 0, income: state.income + state.incomeExtra };
   save();
   $('modal-month').classList.add('hidden');
   renderDashboard();
+  showToast('Neuer Monat gestartet');
 });
+
+/* ====================== SWIPE BACK ====================== */
+
+var touchStartX = 0;
+var touchStartY = 0;
+
+document.addEventListener('touchstart', function(e) {
+  touchStartX = e.changedTouches[0].clientX;
+  touchStartY = e.changedTouches[0].clientY;
+}, { passive: true });
+
+document.addEventListener('touchend', function(e) {
+  var dx = e.changedTouches[0].clientX - touchStartX;
+  var dy = Math.abs(e.changedTouches[0].clientY - touchStartY);
+  if (dx > 80 && dy < 60 && touchStartX < 40) {
+    if (currentScreen === 'fixkosten') { $('back-fix').click(); }
+    else if (currentScreen === 'variable') { $('back-var').click(); }
+    else if (currentScreen === 'settings') { $('back-settings').click(); }
+  }
+}, { passive: true });
 
 /* ====================== PWA INSTALL ====================== */
 
 var deferredPrompt = null;
 var installBanner = $('install-banner');
-var installBtn = $('install-btn');
-var installDismiss = $('install-dismiss');
 
 function isStandalone() {
-  return window.matchMedia('(display-mode: standalone)').matches ||
-         window.navigator.standalone === true;
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 }
 
 window.addEventListener('beforeinstallprompt', function(e) {
@@ -608,7 +637,7 @@ window.addEventListener('beforeinstallprompt', function(e) {
   installBanner.classList.remove('hidden');
 });
 
-installBtn.addEventListener('click', function() {
+$('install-btn').addEventListener('click', function() {
   if (!deferredPrompt) return;
   deferredPrompt.prompt();
   deferredPrompt.userChoice.then(function() {
@@ -617,7 +646,7 @@ installBtn.addEventListener('click', function() {
   });
 });
 
-installDismiss.addEventListener('click', function() {
+$('install-dismiss').addEventListener('click', function() {
   installBanner.classList.add('hidden');
   deferredPrompt = null;
 });
@@ -635,11 +664,31 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+/* ====================== KEYBOARD NAV ====================== */
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    if (!$('modal-month').classList.contains('hidden')) {
+      $('modal-month').classList.add('hidden');
+      return;
+    }
+    if (currentScreen === 'fixkosten') $('back-fix').click();
+    else if (currentScreen === 'variable') $('back-var').click();
+    else if (currentScreen === 'settings') $('back-settings').click();
+  }
+});
+
 /* ====================== INIT ====================== */
 
 function init() {
   load();
   if (state.onboarded && state.income > 0) {
+    prevValues = {
+      fix: sumArray(state.fixCosts),
+      variable: sumArray(state.varBudgets),
+      free: getTotalIncome() - sumArray(state.fixCosts) - sumArray(state.varBudgets),
+      income: getTotalIncome()
+    };
     showScreen('dashboard');
     renderDashboard();
   } else {
